@@ -17,9 +17,6 @@ class Track:
         self.surface = pygame.Surface((width, height))
         self.surface.fill(BASE)
 
-        # Smoothed visual surface (generated on mode switch, None = use raw surface)
-        self.visual_surface = None
-
         # Drawing state
         self.drawing = False
         self.erasing = False
@@ -35,7 +32,6 @@ class Track:
     def start_draw(self, pos, erase=False):
         self.drawing = True
         self.erasing = erase
-        self.visual_surface = None  # invalidate smooth cache while editing
         self.points = [pos]
         self._paint(pos)
 
@@ -106,12 +102,12 @@ class Track:
         return True
 
     def smooth(self, passes=3):
-        """Smooth track edges and build an anti-aliased visual surface."""
+        """Smooth out small jitters in drawn track edges via blur + re-threshold."""
         arr = pygame.surfarray.pixels3d(self.surface)
         threshold = (BASE[0] + SURFACE0[0]) // 2
         mask = (arr[:, :, 0] > threshold).astype(np.float32)
 
-        # Repeated box blur to approximate gaussian — smooths collision geometry
+        # Repeated box blur to iron out hand-drawn wobbles
         for _ in range(passes):
             padded = np.pad(mask, ((1, 1), (1, 1)), mode='edge')
             mask = (
@@ -120,7 +116,7 @@ class Track:
                 + padded[2:, :-2] + padded[2:, 1:-1] + padded[2:, 2:]
             ) / 9.0
 
-        # Re-threshold collision surface
+        # Re-threshold back to crisp two-color surface
         drivable = mask > 0.5
         arr[drivable, 0] = SURFACE0[0]
         arr[drivable, 1] = SURFACE0[1]
@@ -130,30 +126,8 @@ class Track:
         arr[~drivable, 2] = BASE[2]
         del arr  # release surfarray lock
 
-        # Build anti-aliased visual surface by blending edge pixels
-        self.visual_surface = self.surface.copy()
-        vis_arr = pygame.surfarray.pixels3d(self.visual_surface)
-
-        # Blur the mask further for soft edges (visual only)
-        soft = mask.copy()
-        for _ in range(4):
-            padded = np.pad(soft, ((1, 1), (1, 1)), mode='edge')
-            soft = (
-                padded[:-2, :-2] + padded[:-2, 1:-1] + padded[:-2, 2:]
-                + padded[1:-1, :-2] + padded[1:-1, 1:-1] + padded[1:-1, 2:]
-                + padded[2:, :-2] + padded[2:, 1:-1] + padded[2:, 2:]
-            ) / 9.0
-
-        # Blend between BASE and SURFACE0 using the soft mask
-        for ch in range(3):
-            vis_arr[:, :, ch] = (
-                BASE[ch] + (SURFACE0[ch] - BASE[ch]) * soft
-            ).astype(np.uint8)
-        del vis_arr
-
     def clear(self):
         self.surface.fill(BASE)
-        self.visual_surface = None
 
     def get_track_list(self):
         os.makedirs(TRACK_DIR, exist_ok=True)
@@ -161,10 +135,7 @@ class Track:
         return sorted(files)
 
     def draw_to_screen(self, screen):
-        if self.visual_surface is not None:
-            screen.blit(self.visual_surface, (0, 0))
-        else:
-            screen.blit(self.surface, (0, 0))
+        screen.blit(self.surface, (0, 0))
 
     def draw_start_marker(self, screen):
         import math
