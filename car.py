@@ -129,7 +129,7 @@ class Car:
             turn = steering * self.turn_speed * (self.vel_forward / self.max_speed)
             self.angle += turn
             # Steering at speed pushes laterally — the core drift mechanic
-            self.vel_lateral += steering * abs(self.vel_forward) * self.lateral_factor
+            self.vel_lateral -= steering * abs(self.vel_forward) * self.lateral_factor
 
         # Acceleration / braking
         if throttle > 0:
@@ -258,12 +258,12 @@ class Car:
         for i, (mx, my, alpha) in enumerate(self.tire_marks):
             if alpha > 10:
                 a = min(255, alpha)
-                mark_surf = pygame.Surface((3, 3), pygame.SRCALPHA)
-                mark_surf.fill((40, 40, 40, a))
-                screen.blit(mark_surf, (int(mx) - 1, int(my) - 1))
+                mark_surf = pygame.Surface((4, 4), pygame.SRCALPHA)
+                pygame.draw.circle(mark_surf, (40, 40, 40, a), (2, 2), 2)
+                screen.blit(mark_surf, (int(mx) - 2, int(my) - 2))
                 self.tire_marks[i] = (mx, my, alpha - 3)
 
-        # Draw rays with gradient
+        # Draw rays with anti-aliased lines
         if draw_rays:
             for i, ray_angle in enumerate(self.ray_angles):
                 angle_rad = math.radians(self.angle + ray_angle)
@@ -271,80 +271,95 @@ class Car:
                 end_y = self.y + math.sin(angle_rad) * self.ray_distances[i]
 
                 ratio = max(0.0, min(1.0, self.ray_distances[i] / self.ray_length))
-                # Lavender (far) to Red (close)
                 ray_color = (
                     int(RED[0] + (LAVENDER[0] - RED[0]) * ratio),
                     int(RED[1] + (LAVENDER[1] - RED[1]) * ratio),
                     int(RED[2] + (LAVENDER[2] - RED[2]) * ratio),
                 )
-                pygame.draw.line(screen, ray_color,
-                                 (int(self.x), int(self.y)),
-                                 (int(end_x), int(end_y)), 2)
+                pygame.draw.aaline(screen, ray_color,
+                                   (self.x, self.y),
+                                   (end_x, end_y))
 
-        # Visual angle includes drift rotation
-        vis_rad = math.radians(self.angle + self.visual_drift_angle)
-        cos_v = math.cos(vis_rad)
-        sin_v = math.sin(vis_rad)
+        # --- Render car sprite with supersampling for smooth edges ---
+        SS = 4  # supersample factor
+        margin = 4
+        sprite_w = (self.length + margin * 2) * SS
+        sprite_h = (self.width + margin * 2 + 4) * SS  # extra for wheels
+        sprite = pygame.Surface((sprite_w, sprite_h), pygame.SRCALPHA)
 
-        def _rot(dx, dy):
-            return (self.x + dx * cos_v - dy * sin_v,
-                    self.y + dx * sin_v + dy * cos_v)
+        cx = sprite_w / 2
+        cy = sprite_h / 2
+        hl = self.length / 2 * SS
+        hw = self.width / 2 * SS
 
-        hl = self.length / 2
-        hw = self.width / 2
+        # Wheels (drawn under the body)
+        wl = 5 * SS
+        ww = 2.5 * SS
+        wheel_positions = [
+            (-hl + 3 * SS, -hw - 1 * SS), (-hl + 3 * SS, hw + 1 * SS),
+            (hl - 4 * SS, -hw - 1 * SS), (hl - 4 * SS, hw + 1 * SS),
+        ]
+        for wx_off, wy_off in wheel_positions:
+            wheel = [
+                (cx + wx_off - wl / 2, cy + wy_off - ww / 2),
+                (cx + wx_off + wl / 2, cy + wy_off - ww / 2),
+                (cx + wx_off + wl / 2, cy + wy_off + ww / 2),
+                (cx + wx_off - wl / 2, cy + wy_off + ww / 2),
+            ]
+            pygame.draw.polygon(sprite, CRUST, wheel)
 
-        # --- Car body (main rectangle) ---
-        body = [_rot(-hl, -hw), _rot(hl, -hw), _rot(hl, hw), _rot(-hl, hw)]
-        int_body = [(int(p[0]), int(p[1])) for p in body]
-        pygame.draw.polygon(screen, color, int_body)
-        pygame.draw.polygon(screen, OVERLAY0, int_body, 1)
+        # Car body
+        body = [
+            (cx - hl, cy - hw), (cx + hl, cy - hw),
+            (cx + hl, cy + hw), (cx - hl, cy + hw),
+        ]
+        pygame.draw.polygon(sprite, color, body)
+        pygame.draw.polygon(sprite, OVERLAY0, body, max(1, SS // 2))
 
-        # --- Windshield (darker trapezoid on front half) ---
+        # Windshield
         ws_front = hl * 0.55
         ws_back = hl * 0.05
         ws_w = hw * 0.7
-        windshield = [_rot(ws_back, -ws_w), _rot(ws_front, -ws_w),
-                       _rot(ws_front, ws_w), _rot(ws_back, ws_w)]
-        int_ws = [(int(p[0]), int(p[1])) for p in windshield]
-        # Darken the body color for windshield
-        ws_color = (max(0, color[0] - 60), max(0, color[1] - 60), max(0, color[2] - 60))
-        pygame.draw.polygon(screen, ws_color, int_ws)
-
-        # --- Headlights (two small bright rectangles at front) ---
-        hl_size = 2
-        for side in [-1, 1]:
-            hx, hy = _rot(hl - 1, side * (hw - 2))
-            pygame.draw.circle(screen, (255, 255, 200), (int(hx), int(hy)), hl_size)
-
-        # --- Taillights (two small red rectangles at rear) ---
-        for side in [-1, 1]:
-            tx, ty = _rot(-hl + 1, side * (hw - 2))
-            pygame.draw.circle(screen, RED, (int(tx), int(ty)), hl_size)
-
-        # --- Wheels (4 dark rectangles) ---
-        wheel_l = 5
-        wheel_w = 2
-        wheel_positions = [
-            (-hl + 3, -hw - 1), (-hl + 3, hw + 1),  # rear
-            (hl - 4, -hw - 1), (hl - 4, hw + 1),    # front
+        windshield = [
+            (cx + ws_back, cy - ws_w), (cx + ws_front, cy - ws_w),
+            (cx + ws_front, cy + ws_w), (cx + ws_back, cy + ws_w),
         ]
-        for wx_off, wy_off in wheel_positions:
-            wc = _rot(wx_off, wy_off)
-            # Small rotated rectangle for wheel
-            for ddx in range(-wheel_l // 2, wheel_l // 2 + 1):
-                for ddy in range(-wheel_w // 2, wheel_w // 2 + 1):
-                    px, py = _rot(wx_off + ddx * 0.8, wy_off + ddy * 0.8)
-                    screen.set_at((int(px), int(py)), CRUST)
+        ws_color = (max(0, color[0] - 60), max(0, color[1] - 60), max(0, color[2] - 60))
+        pygame.draw.polygon(sprite, ws_color, windshield)
+
+        # Headlights
+        hl_r = 2.5 * SS
+        for side in [-1, 1]:
+            pygame.draw.circle(sprite, (255, 255, 200),
+                               (int(cx + hl - 1 * SS), int(cy + side * (hw - 2 * SS))),
+                               int(hl_r))
+
+        # Taillights
+        for side in [-1, 1]:
+            pygame.draw.circle(sprite, RED,
+                               (int(cx - hl + 1 * SS), int(cy + side * (hw - 2 * SS))),
+                               int(hl_r))
+
+        # Downscale for anti-aliasing
+        final_w = sprite_w // SS
+        final_h = sprite_h // SS
+        sprite = pygame.transform.smoothscale(sprite, (final_w, final_h))
+
+        # Rotate and blit
+        vis_angle = -(self.angle + self.visual_drift_angle)
+        rotated = pygame.transform.rotozoom(sprite, vis_angle, 1.0)
+        rect = rotated.get_rect(center=(int(self.x), int(self.y)))
+        screen.blit(rotated, rect)
 
         # --- Drift smoke particles ---
         if self.drift_amount > 1.0 and abs(self.vel_forward) > 1.5:
             import random
             wheels = self._get_wheel_positions()
-            for w in wheels[:2]:  # rear wheels smoke
+            for w in wheels[:2]:
                 for _ in range(2):
                     sx = int(w[0] + random.randint(-4, 4))
                     sy = int(w[1] + random.randint(-4, 4))
-                    size = random.randint(2, 5)
+                    size = random.randint(3, 6)
                     alpha = random.randint(40, 100)
                     smoke = pygame.Surface((size * 2, size * 2), pygame.SRCALPHA)
                     pygame.draw.circle(smoke, (200, 200, 200, alpha), (size, size), size)

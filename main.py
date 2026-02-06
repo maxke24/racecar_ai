@@ -180,9 +180,11 @@ class Game:
         elif event.key == pygame.K_2:
             self.mode = MODE_DRIVE
             self._stop_ai()
+            self.track.smooth()
             self._spawn_player_car()
         elif event.key == pygame.K_3:
             self.mode = MODE_AI
+            self.track.smooth()
             self._start_ai()
 
         if self.mode == MODE_DRAW:
@@ -382,9 +384,13 @@ class Game:
             self.game_surface.blit(txt, (tx, ty))
 
     def _draw_draw_ui(self):
-        # Brush cursor (map window mouse pos to internal coords)
+        # Brush cursor with anti-aliased ring
         mx, my = self._map_mouse(pygame.mouse.get_pos())
-        pygame.draw.circle(self.game_surface, LAVENDER, (mx, my), self.track.brush_size, 2)
+        r = self.track.brush_size
+        sz = (r + 4) * 2
+        cursor_surf = pygame.Surface((sz, sz), pygame.SRCALPHA)
+        pygame.draw.circle(cursor_surf, (*LAVENDER, 180), (sz // 2, sz // 2), r, 2)
+        self.game_surface.blit(cursor_surf, (mx - sz // 2, my - sz // 2))
 
         lines = [
             "DRAW MODE",

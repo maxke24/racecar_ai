@@ -1,4 +1,5 @@
 import pygame
+import numpy as np
 import json
 import os
 from colors import BASE, SURFACE0, LAVENDER, RED
@@ -12,9 +13,12 @@ class Track:
         self.width = width
         self.height = height
 
-        # The track surface: Surface0 = drivable, Base = wall
+        # The track surface: Surface0 = drivable, Base = wall (used for collision)
         self.surface = pygame.Surface((width, height))
         self.surface.fill(BASE)
+
+        # Smoothed visual surface (generated on mode switch, None = use raw surface)
+        self.visual_surface = None
 
         # Drawing state
         self.drawing = False
@@ -31,6 +35,7 @@ class Track:
     def start_draw(self, pos, erase=False):
         self.drawing = True
         self.erasing = erase
+        self.visual_surface = None  # invalidate smooth cache while editing
         self.points = [pos]
         self._paint(pos)
 
@@ -100,8 +105,55 @@ class Track:
             self.brush_size = meta.get("brush_size", 40)
         return True
 
+    def smooth(self, passes=3):
+        """Smooth track edges and build an anti-aliased visual surface."""
+        arr = pygame.surfarray.pixels3d(self.surface)
+        threshold = (BASE[0] + SURFACE0[0]) // 2
+        mask = (arr[:, :, 0] > threshold).astype(np.float32)
+
+        # Repeated box blur to approximate gaussian — smooths collision geometry
+        for _ in range(passes):
+            padded = np.pad(mask, ((1, 1), (1, 1)), mode='edge')
+            mask = (
+                padded[:-2, :-2] + padded[:-2, 1:-1] + padded[:-2, 2:]
+                + padded[1:-1, :-2] + padded[1:-1, 1:-1] + padded[1:-1, 2:]
+                + padded[2:, :-2] + padded[2:, 1:-1] + padded[2:, 2:]
+            ) / 9.0
+
+        # Re-threshold collision surface
+        drivable = mask > 0.5
+        arr[drivable, 0] = SURFACE0[0]
+        arr[drivable, 1] = SURFACE0[1]
+        arr[drivable, 2] = SURFACE0[2]
+        arr[~drivable, 0] = BASE[0]
+        arr[~drivable, 1] = BASE[1]
+        arr[~drivable, 2] = BASE[2]
+        del arr  # release surfarray lock
+
+        # Build anti-aliased visual surface by blending edge pixels
+        self.visual_surface = self.surface.copy()
+        vis_arr = pygame.surfarray.pixels3d(self.visual_surface)
+
+        # Blur the mask further for soft edges (visual only)
+        soft = mask.copy()
+        for _ in range(4):
+            padded = np.pad(soft, ((1, 1), (1, 1)), mode='edge')
+            soft = (
+                padded[:-2, :-2] + padded[:-2, 1:-1] + padded[:-2, 2:]
+                + padded[1:-1, :-2] + padded[1:-1, 1:-1] + padded[1:-1, 2:]
+                + padded[2:, :-2] + padded[2:, 1:-1] + padded[2:, 2:]
+            ) / 9.0
+
+        # Blend between BASE and SURFACE0 using the soft mask
+        for ch in range(3):
+            vis_arr[:, :, ch] = (
+                BASE[ch] + (SURFACE0[ch] - BASE[ch]) * soft
+            ).astype(np.uint8)
+        del vis_arr
+
     def clear(self):
         self.surface.fill(BASE)
+        self.visual_surface = None
 
     def get_track_list(self):
         os.makedirs(TRACK_DIR, exist_ok=True)
@@ -109,7 +161,10 @@ class Track:
         return sorted(files)
 
     def draw_to_screen(self, screen):
-        screen.blit(self.surface, (0, 0))
+        if self.visual_surface is not None:
+            screen.blit(self.visual_surface, (0, 0))
+        else:
+            screen.blit(self.surface, (0, 0))
 
     def draw_start_marker(self, screen):
         import math
@@ -117,15 +172,20 @@ class Track:
         rad = math.radians(self.start_angle)
         end_x = x + math.cos(rad) * 25
         end_y = y + math.sin(rad) * 25
-        pygame.draw.circle(screen, RED, (x, y), 8)
-        pygame.draw.line(screen, RED, (x, y), (int(end_x), int(end_y)), 3)
-        # Arrow head
-        arrow_len = 8
-        arr_angle1 = rad + math.pi * 0.8
-        arr_angle2 = rad - math.pi * 0.8
-        a1x = int(end_x + math.cos(arr_angle1) * arrow_len)
-        a1y = int(end_y + math.sin(arr_angle1) * arrow_len)
-        a2x = int(end_x + math.cos(arr_angle2) * arrow_len)
-        a2y = int(end_y + math.sin(arr_angle2) * arrow_len)
-        pygame.draw.line(screen, RED, (int(end_x), int(end_y)), (a1x, a1y), 3)
-        pygame.draw.line(screen, RED, (int(end_x), int(end_y)), (a2x, a2y), 3)
+
+        # Render marker at 4x then smoothscale down for anti-aliasing
+        SS = 4
+        size = 70
+        surf = pygame.Surface((size * SS, size * SS), pygame.SRCALPHA)
+        c = size * SS // 2
+        pygame.draw.circle(surf, RED, (c, c), 8 * SS)
+        ex = c + math.cos(rad) * 25 * SS
+        ey = c + math.sin(rad) * 25 * SS
+        pygame.draw.line(surf, RED, (c, c), (int(ex), int(ey)), 3 * SS)
+        arrow_len = 8 * SS
+        for a_off in [math.pi * 0.8, -math.pi * 0.8]:
+            ax = int(ex + math.cos(rad + a_off) * arrow_len)
+            ay = int(ey + math.sin(rad + a_off) * arrow_len)
+            pygame.draw.line(surf, RED, (int(ex), int(ey)), (ax, ay), 3 * SS)
+        surf = pygame.transform.smoothscale(surf, (size, size))
+        screen.blit(surf, (x - size // 2, y - size // 2))
