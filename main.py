@@ -1,6 +1,7 @@
 import sys
 import os
 import math
+import numpy as np
 
 # Suppress ALSA errors on systems without audio (e.g. WSL)
 os.environ["SDL_AUDIODRIVER"] = "dummy"
@@ -9,6 +10,7 @@ import pygame
 from car import Car
 from track import Track
 from neural_network import Population
+from dqn import DQNAgent
 from colors import (
     BASE, MANTLE, CRUST, SURFACE0, SURFACE1, SURFACE2,
     LAVENDER, BLUE, TEAL, GREEN, YELLOW, PEACH, RED, MAUVE,
@@ -69,11 +71,21 @@ class Game:
         # Manual driving car
         self.player_car = None
 
-        # AI
+        # AI (legacy GA)
         self.population = None
         self.ai_cars = []
         self.ai_generation_running = False
         self.ai_speed_multiplier = 1
+
+        # DQN
+        self.dqn_agent = None
+        self.dqn_car = None
+        self.dqn_episode = 0
+        self.dqn_episode_reward = 0.0
+        self.dqn_step_count = 0
+        self.dqn_prev_state = None
+        self.dqn_prev_action = None
+        self.dqn_prev_distance = 0.0
 
         # Track saving
         self.track_name_input = ""
@@ -215,7 +227,8 @@ class Game:
             elif event.key == pygame.K_MINUS:
                 self.ai_speed_multiplier = max(1, self.ai_speed_multiplier - 1)
             elif event.key == pygame.K_b:
-                self.population.save_best("tracks/best_brain.json")
+                if self.dqn_agent:
+                    self.dqn_agent.save("tracks/dqn_brain.json")
 
     def _handle_mousedown(self, event):
         if self.mode == MODE_DRAW:
@@ -255,22 +268,24 @@ class Game:
         self.player_car = Car(self.track.start_x, self.track.start_y, self.track.start_angle)
 
     def _start_ai(self):
-        self.population = Population(POPULATION_SIZE)
-        self.population.load_best("tracks/best_brain.json")
-        self._spawn_ai_generation()
-
-    def _spawn_ai_generation(self):
-        self.ai_cars = []
-        for i in range(POPULATION_SIZE):
-            car = Car(self.track.start_x, self.track.start_y, self.track.start_angle)
-            car.max_tire_marks = 0  # disable tire marks for AI perf
-            self.ai_cars.append(car)
+        self.dqn_agent = DQNAgent()
+        self.dqn_agent.load("tracks/dqn_brain.json")
+        self._spawn_dqn_episode()
         self.ai_generation_running = True
+
+    def _spawn_dqn_episode(self):
+        self.dqn_car = Car(self.track.start_x, self.track.start_y, self.track.start_angle)
+        self.dqn_car.max_tire_marks = 0
+        self.dqn_episode_reward = 0.0
+        self.dqn_step_count = 0
+        self.dqn_prev_state = None
+        self.dqn_prev_action = None
+        self.dqn_prev_distance = 0.0
 
     def _stop_ai(self):
         self.ai_generation_running = False
-        self.ai_cars = []
-        self.population = None
+        self.dqn_agent = None
+        self.dqn_car = None
 
     def update(self):
         if self.mode == MODE_DRIVE and self.player_car and self.player_car.alive:
@@ -294,35 +309,57 @@ class Game:
             for _ in range(self.ai_speed_multiplier):
                 self._update_ai()
 
+    def _get_dqn_state(self, car):
+        rays_norm = car.get_normalized_rays()
+        speed_norm = car.vel_forward / car.max_speed
+        return np.concatenate([rays_norm, [speed_norm]])
+
     def _update_ai(self):
-        if not self.ai_generation_running:
+        if not self.ai_generation_running or not self.dqn_agent or not self.dqn_car:
             return
 
-        alive_count = 0
-        for i, car in enumerate(self.ai_cars):
-            if not car.alive:
-                continue
+        car = self.dqn_car
+        agent = self.dqn_agent
 
-            # Kill stalling cars: not moving for too long
-            if car.stall_timer > MAX_STALL_FRAMES:
-                car.alive = False
-                continue
-
-            car.cast_rays(self.track.surface)
-            rays_norm = car.get_normalized_rays()
-            speed_norm = car.speed / car.max_speed
-
-            throttle, steering = self.population.get_actions(i, rays_norm, speed_norm)
-            car.update(throttle, steering)
-            car.check_collision(self.track.surface)
-
+        # Check for death or stall
+        terminal = not car.alive or car.stall_timer > MAX_STALL_FRAMES
+        if terminal:
             if car.alive:
-                alive_count += 1
+                car.alive = False
+            # Store terminal transition
+            if self.dqn_prev_state is not None:
+                reward = agent.compute_reward(car, self.dqn_prev_distance)
+                state = self.dqn_prev_state
+                next_state = state  # dummy, won't be used since done=True
+                agent.store_transition(state, self.dqn_prev_action, reward, next_state, True)
+                self.dqn_episode_reward += reward
 
-        if alive_count == 0:
-            fitnesses = [car.get_fitness() for car in self.ai_cars]
-            self.population.evolve(fitnesses)
-            self._spawn_ai_generation()
+            agent.end_episode(self.dqn_episode_reward)
+            self._spawn_dqn_episode()
+            return
+
+        # Cast rays and get state
+        car.cast_rays(self.track.surface)
+        state = self._get_dqn_state(car)
+
+        # If we have a previous step, compute reward and store transition
+        if self.dqn_prev_state is not None:
+            reward = agent.compute_reward(car, self.dqn_prev_distance)
+            agent.store_transition(self.dqn_prev_state, self.dqn_prev_action, reward, state, False)
+            self.dqn_episode_reward += reward
+            agent.step_count += 1
+            agent.train_step()
+
+        # Select action and apply
+        action = agent.select_action(state)
+        throttle, steering = agent.action_to_controls(action)
+        self.dqn_prev_state = state
+        self.dqn_prev_action = action
+        self.dqn_prev_distance = car.distance_driven
+        self.dqn_step_count += 1
+
+        car.update(throttle, steering)
+        car.check_collision(self.track.surface)
 
     # ─── Rendering ───────────────────────────────────────────────────────────
     def draw(self):
@@ -443,31 +480,27 @@ class Game:
         self._draw_hud_panel(lines, color=GREEN)
 
     def _draw_ai_ui(self):
-        if not self.population:
+        if not self.dqn_agent:
             return
 
-        alive = 0
-        best_car = None
-        best_fitness = -1
-        for car in self.ai_cars:
-            if car.alive:
-                alive += 1
-                f = car.get_fitness()
-                if f > best_fitness:
-                    best_fitness = f
-                    best_car = car
-                car.draw(self.game_surface, color=TEAL, draw_rays=False)
+        if self.dqn_car and self.dqn_car.alive:
+            self.dqn_car.draw(self.game_surface, color=TEAL, draw_rays=True)
 
-        if best_car:
-            best_car.draw(self.game_surface, color=YELLOW, draw_rays=True)
+        agent = self.dqn_agent
+        avg_loss = agent.get_avg_loss()
+        buf_size = len(agent.replay_buffer)
+        best_r = agent.best_reward if agent.best_reward > float('-inf') else 0.0
 
         lines = [
-            "AI MODE",
-            f"Generation: {self.population.generation}",
-            f"Alive: {alive}/{POPULATION_SIZE}",
-            f"Best fitness (all time): {self.population.best_fitness:.0f}",
+            "AI MODE (DQN)",
+            f"Episode: {agent.episode}",
+            f"Epsilon: {agent.epsilon:.3f}",
+            f"Episode reward: {self.dqn_episode_reward:.1f}",
+            f"Buffer: {buf_size}/{agent.replay_buffer.capacity}",
+            f"Avg loss: {avg_loss:.4f}",
+            f"Best reward: {best_r:.1f}",
             f"Speed: {self.ai_speed_multiplier}x (+/- to change)",
-            "R: restart | B: save best brain",
+            "R: restart | B: save brain",
         ]
         self._draw_hud_panel(lines, color=PEACH)
 
