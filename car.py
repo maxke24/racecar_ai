@@ -180,14 +180,12 @@ class Car:
         self.x += dx
         self.y += dy
 
-        # Fitness: use euclidean displacement from start
-        disp_x = self.x - self.start_x
-        disp_y = self.y - self.start_y
-        self.distance_driven = math.sqrt(disp_x * disp_x + disp_y * disp_y)
+        # Fitness: cumulative distance traveled
+        moved = math.sqrt((self.x - self.prev_x) ** 2 + (self.y - self.prev_y) ** 2)
+        self.distance_driven += moved
         self.frames_alive += 1
 
         # Track stalling: if car barely moved this frame, increment stall timer
-        moved = math.sqrt((self.x - self.prev_x) ** 2 + (self.y - self.prev_y) ** 2)
         if moved < 0.5:
             self.stall_timer += 1
         else:

@@ -24,7 +24,7 @@ INTERNAL_WIDTH, INTERNAL_HEIGHT = 1920, 1080
 WIN_WIDTH, WIN_HEIGHT = 1280, 720
 FPS = 60
 POPULATION_SIZE = 50
-MAX_STALL_FRAMES = 180
+MAX_STALL_FRAMES = 60
 
 # ─── Modes ───────────────────────────────────────────────────────────────────
 MODE_DRAW = "draw"

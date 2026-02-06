@@ -180,7 +180,7 @@ class DQNAgent:
         self.lr = 0.001
         self.epsilon = 1.0
         self.epsilon_min = 0.05
-        self.epsilon_decay = 0.998
+        self.epsilon_decay = 0.9995
         self.target_update_freq = 10  # episodes
         self.min_replay_size = 1000
         self.train_every = 4  # train every N steps
@@ -261,12 +261,15 @@ class DQNAgent:
 
         reward = 0.0
 
-        # Speed bonus: encourage forward movement
-        reward += (car.vel_forward / car.max_speed) * 0.1
+        # Time penalty: forces the car to do something
+        reward -= 0.01
 
-        # Progress: distance delta from start
+        # Speed bonus: encourage forward movement
+        reward += (car.vel_forward / car.max_speed) * 0.3
+
+        # Progress: cumulative distance delta
         curr_distance = car.distance_driven
-        reward += (curr_distance - prev_distance) * 0.01
+        reward += (curr_distance - prev_distance) * 0.5
 
         # Center ray bonus: ray index 3 is the center (forward) ray
         rays_norm = car.get_normalized_rays()
