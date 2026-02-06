@@ -1,0 +1,20 @@
+# Catppuccin Macchiato palette
+# https://github.com/catppuccin/catppuccin
+
+BASE =      (36, 39, 58)
+MANTLE =    (30, 32, 48)
+CRUST =     (24, 25, 38)
+SURFACE0 =  (54, 58, 79)
+SURFACE1 =  (73, 77, 100)
+SURFACE2 =  (91, 96, 120)
+LAVENDER =  (183, 189, 248)
+BLUE =      (138, 173, 244)
+TEAL =      (139, 213, 202)
+GREEN =     (166, 218, 149)
+YELLOW =    (238, 212, 159)
+PEACH =     (245, 169, 127)
+RED =       (237, 135, 150)
+MAUVE =     (198, 160, 246)
+TEXT =      (202, 211, 245)
+SUBTEXT0 =  (165, 173, 203)
+OVERLAY0 =  (110, 115, 141)
