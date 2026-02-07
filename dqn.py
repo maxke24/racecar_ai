@@ -254,8 +254,8 @@ class DQNAgent:
             return 0.0
         return self.total_loss / self.loss_count
 
-    def compute_reward(self, car, prev_distance):
-        """Per-step reward signal."""
+    def compute_reward(self, car, prev_field_dist, curr_field_dist, checkpoint_hit):
+        """Per-step reward signal using BFS distance field and checkpoints."""
         if not car.alive:
             return -5.0
 
@@ -267,9 +267,13 @@ class DQNAgent:
         # Speed bonus: encourage forward movement
         reward += (car.vel_forward / car.max_speed) * 0.3
 
-        # Progress: cumulative distance delta
-        curr_distance = car.distance_driven
-        reward += (curr_distance - prev_distance) * 0.5
+        # Checkpoint bonus: big reward for reaching next checkpoint
+        if checkpoint_hit:
+            reward += 10.0
+
+        # BFS distance field progress: continuous signal toward next checkpoint
+        field_delta = curr_field_dist - prev_field_dist
+        reward += field_delta * 0.02
 
         # Center ray bonus: ray index 3 is the center (forward) ray
         rays_norm = car.get_normalized_rays()

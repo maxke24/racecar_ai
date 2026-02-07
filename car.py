@@ -18,11 +18,11 @@ class Car:
         self.friction = 0.05
         self.turn_speed = 4.5
 
-        # Drift physics — Tokyo Drift style
-        self.grip = 0.45           # how fast lateral velocity decays normally
-        self.drift_grip = 0.12     # low grip when drifting
-        self.drift_threshold = 0.4 # threshold to enter drift
-        self.lateral_factor = 0.35 # how much steering pushes sideways
+        # Drift physics — reduced drift for better AI training
+        self.grip = 0.65           # how fast lateral velocity decays normally
+        self.drift_grip = 0.25     # moderate grip when drifting
+        self.drift_threshold = 0.6 # harder to enter drift state
+        self.lateral_factor = 0.20 # less sideways push from steering
         self.drift_angle_factor = 0.15  # visual body rotation during drift
 
         # Raycast settings

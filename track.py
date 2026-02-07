@@ -2,7 +2,8 @@ import pygame
 import numpy as np
 import json
 import os
-from colors import BASE, SURFACE0, LAVENDER, RED
+from collections import deque
+from colors import BASE, SURFACE0, LAVENDER, RED, GREEN, OVERLAY0, SURFACE2
 
 
 TRACK_DIR = os.path.join(os.path.dirname(__file__), "tracks")
@@ -28,6 +29,10 @@ class Track:
         self.start_y = height * 3 // 4
         self.start_angle = 0
         self.placing_start = False
+
+        # Checkpoint system (populated by generate_checkpoints)
+        self.checkpoints = []
+        self.distance_field = None
 
     def start_draw(self, pos, erase=False):
         self.drawing = True
@@ -125,6 +130,93 @@ class Track:
         arr[~drivable, 1] = BASE[1]
         arr[~drivable, 2] = BASE[2]
         del arr  # release surfarray lock
+
+    def generate_checkpoints(self, spacing=150):
+        """BFS flood fill from start to build distance field and extract checkpoints."""
+        arr = pygame.surfarray.pixels3d(self.surface)
+        drivable = arr[:, :, 0] > 50  # white-ish = drivable
+        del arr  # release lock
+
+        h, w = drivable.shape[1], drivable.shape[0]  # surfarray is (x, y)
+        dist_field = np.full((w, h), -1, dtype=np.int32)
+
+        sx, sy = int(self.start_x), int(self.start_y)
+        if not (0 <= sx < w and 0 <= sy < h and drivable[sx, sy]):
+            self.checkpoints = []
+            self.distance_field = dist_field
+            return
+
+        # BFS from start
+        queue = deque()
+        queue.append((sx, sy))
+        dist_field[sx, sy] = 0
+        farthest = (sx, sy)
+        max_dist = 0
+
+        while queue:
+            x, y = queue.popleft()
+            d = dist_field[x, y]
+            if d > max_dist:
+                max_dist = d
+                farthest = (x, y)
+            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < w and 0 <= ny < h and dist_field[nx, ny] == -1 and drivable[nx, ny]:
+                    dist_field[nx, ny] = d + 1
+                    queue.append((nx, ny))
+
+        self.distance_field = dist_field
+
+        # Trace spine: greedy walk from farthest back to start following steepest descent
+        spine = []
+        cx, cy = farthest
+        while dist_field[cx, cy] > 0:
+            spine.append((cx, cy))
+            best = None
+            best_d = dist_field[cx, cy]
+            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                nx, ny = cx + dx, cy + dy
+                if 0 <= nx < w and 0 <= ny < h and dist_field[nx, ny] >= 0:
+                    if dist_field[nx, ny] < best_d:
+                        best_d = dist_field[nx, ny]
+                        best = (nx, ny)
+            if best is None:
+                break
+            cx, cy = best
+        spine.append((sx, sy))
+        spine.reverse()  # now goes from start to farthest
+
+        # Sample checkpoints at regular BFS-distance intervals along the spine
+        self.checkpoints = []
+        next_dist = spacing
+        for px, py in spine:
+            if dist_field[px, py] >= next_dist:
+                self.checkpoints.append((px, py))
+                next_dist += spacing
+
+    def draw_checkpoints(self, screen, next_idx):
+        """Draw checkpoint markers on the track."""
+        for i, (cx, cy) in enumerate(self.checkpoints):
+            if i < next_idx:
+                color = OVERLAY0  # passed
+            elif i == next_idx:
+                color = GREEN  # next target
+            else:
+                color = SURFACE2  # future
+            pygame.draw.circle(screen, color, (cx, cy), 8)
+            if i == next_idx:
+                # Draw a larger ring around the active checkpoint
+                pygame.draw.circle(screen, GREEN, (cx, cy), 16, 2)
+
+    def get_field_distance(self, x, y):
+        """Return BFS distance at a pixel position, or 0 if out of bounds / wall."""
+        if self.distance_field is None:
+            return 0
+        ix, iy = int(x), int(y)
+        w, h = self.distance_field.shape
+        if 0 <= ix < w and 0 <= iy < h and self.distance_field[ix, iy] >= 0:
+            return self.distance_field[ix, iy]
+        return 0
 
     def clear(self):
         self.surface.fill(BASE)

@@ -85,7 +85,8 @@ class Game:
         self.dqn_step_count = 0
         self.dqn_prev_state = None
         self.dqn_prev_action = None
-        self.dqn_prev_distance = 0.0
+        self.dqn_prev_field_dist = 0
+        self.dqn_next_checkpoint = 0
 
         # Track saving
         self.track_name_input = ""
@@ -270,6 +271,7 @@ class Game:
     def _start_ai(self):
         self.dqn_agent = DQNAgent()
         self.dqn_agent.load("tracks/dqn_brain.json")
+        self.track.generate_checkpoints()
         self._spawn_dqn_episode()
         self.ai_generation_running = True
 
@@ -280,7 +282,8 @@ class Game:
         self.dqn_step_count = 0
         self.dqn_prev_state = None
         self.dqn_prev_action = None
-        self.dqn_prev_distance = 0.0
+        self.dqn_prev_field_dist = self.track.get_field_distance(self.track.start_x, self.track.start_y)
+        self.dqn_next_checkpoint = 0
 
     def _stop_ai(self):
         self.ai_generation_running = False
@@ -328,7 +331,8 @@ class Game:
                 car.alive = False
             # Store terminal transition
             if self.dqn_prev_state is not None:
-                reward = agent.compute_reward(car, self.dqn_prev_distance)
+                curr_field = self.track.get_field_distance(car.x, car.y)
+                reward = agent.compute_reward(car, self.dqn_prev_field_dist, curr_field, False)
                 state = self.dqn_prev_state
                 next_state = state  # dummy, won't be used since done=True
                 agent.store_transition(state, self.dqn_prev_action, reward, next_state, True)
@@ -342,9 +346,21 @@ class Game:
         car.cast_rays(self.track.surface)
         state = self._get_dqn_state(car)
 
+        # Check checkpoint proximity
+        checkpoint_hit = False
+        if self.dqn_next_checkpoint < len(self.track.checkpoints):
+            cpx, cpy = self.track.checkpoints[self.dqn_next_checkpoint]
+            dist_to_cp = math.sqrt((car.x - cpx) ** 2 + (car.y - cpy) ** 2)
+            if dist_to_cp < 40:
+                checkpoint_hit = True
+                self.dqn_next_checkpoint += 1
+
+        # Get BFS field distance at car position
+        curr_field = self.track.get_field_distance(car.x, car.y)
+
         # If we have a previous step, compute reward and store transition
         if self.dqn_prev_state is not None:
-            reward = agent.compute_reward(car, self.dqn_prev_distance)
+            reward = agent.compute_reward(car, self.dqn_prev_field_dist, curr_field, checkpoint_hit)
             agent.store_transition(self.dqn_prev_state, self.dqn_prev_action, reward, state, False)
             self.dqn_episode_reward += reward
             agent.step_count += 1
@@ -355,7 +371,7 @@ class Game:
         throttle, steering = agent.action_to_controls(action)
         self.dqn_prev_state = state
         self.dqn_prev_action = action
-        self.dqn_prev_distance = car.distance_driven
+        self.dqn_prev_field_dist = curr_field
         self.dqn_step_count += 1
 
         car.update(throttle, steering)
@@ -483,6 +499,9 @@ class Game:
         if not self.dqn_agent:
             return
 
+        # Draw checkpoints on track
+        self.track.draw_checkpoints(self.game_surface, self.dqn_next_checkpoint)
+
         if self.dqn_car and self.dqn_car.alive:
             self.dqn_car.draw(self.game_surface, color=TEAL, draw_rays=True)
 
@@ -490,12 +509,14 @@ class Game:
         avg_loss = agent.get_avg_loss()
         buf_size = len(agent.replay_buffer)
         best_r = agent.best_reward if agent.best_reward > float('-inf') else 0.0
+        total_cp = len(self.track.checkpoints)
 
         lines = [
             "AI MODE (DQN)",
             f"Episode: {agent.episode}",
             f"Epsilon: {agent.epsilon:.3f}",
             f"Episode reward: {self.dqn_episode_reward:.1f}",
+            f"Checkpoints: {self.dqn_next_checkpoint}/{total_cp}",
             f"Buffer: {buf_size}/{agent.replay_buffer.capacity}",
             f"Avg loss: {avg_loss:.4f}",
             f"Best reward: {best_r:.1f}",
